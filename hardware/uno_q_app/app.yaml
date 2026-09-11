@@ -1,0 +1,8 @@
+name: Object and Human Detection
+description: Detects people and everyday objects live from the USB camera, with bounding boxes and a live feed shown in a web UI.
+ports: []
+bricks:
+- arduino:video_object_detection:
+    model: yolox-object-detection
+- arduino:web_ui: {}
+icon: 🕵️

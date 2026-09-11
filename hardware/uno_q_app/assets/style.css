@@ -1,0 +1,258 @@
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;
+  margin: 0;
+  padding: 20px;
+  background-color: #dae3e3;
+  color: #2c353a;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.page {
+  width: 100%;
+  max-width: 1280px;
+}
+
+.header {
+  margin-bottom: 32px;
+}
+
+.arduino-text {
+  color: #008184;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.28px;
+  margin: 0;
+}
+
+.main-content {
+  display: flex;
+  gap: 32px;
+  align-items: stretch;
+  width: 100%;
+}
+
+.container {
+  border-radius: 16px;
+  background: #fff;
+  padding: 24px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-content > .container {
+  flex-grow: 1;
+  justify-content: center;
+  align-items: center;
+}
+
+.right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  width: 100%;
+  max-width: 380px;
+  flex-shrink: 0;
+}
+
+.right-column .container:last-child {
+  flex-grow: 1;
+}
+
+.container-right {
+  padding: 16px 24px;
+}
+
+.section-title {
+  color: #2c353a;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  margin: 0 0 12px 0;
+}
+
+#videoFeedContainer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+
+#videoFeedContainer iframe {
+  max-width: 100%;
+  aspect-ratio: 1024 / 768;
+}
+
+.camera-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 48px 0;
+}
+
+.feedback-text {
+  color: #5d6a6b;
+  font-size: 13px;
+  margin: 0;
+}
+
+/* Human presence */
+
+.person-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.person-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #c9d2d2;
+  flex-shrink: 0;
+}
+
+.person-status.present {
+  color: #008184;
+}
+
+.person-status.present .person-dot {
+  background: #16a588;
+  box-shadow: 0 0 0 4px rgba(22, 165, 136, 0.2);
+}
+
+/* Confidence */
+
+.control-confidence {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.control-confidence label {
+  font-family: 'Roboto Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+}
+
+.confidence-value {
+  color: #008184;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.slider-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.confidence-limits {
+  color: #2c353a;
+  font-size: 12px;
+}
+
+#confidenceSlider {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: #dae3e3;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+#confidenceSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #008184;
+  cursor: pointer;
+}
+
+#confidenceSlider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: #008184;
+  cursor: pointer;
+}
+
+/* Recent detections */
+
+#recentDetections {
+  list-style-type: none;
+  padding: 0;
+  margin: 0;
+  flex: 1;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+#recentDetections li {
+  border-top: 1px solid #c9d2d2;
+  padding: 12px 0;
+  font-size: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+#recentDetections li.person .detection-label {
+  color: #008184;
+  font-weight: 700;
+}
+
+#recentDetections li.empty {
+  color: #5d6a6b;
+  justify-content: center;
+  border-top: none;
+}
+
+.detection-label {
+  font-weight: 600;
+}
+
+.detection-time {
+  color: #5d6a6b;
+  font-size: 13px;
+}
+
+.error-message {
+  margin-top: 20px;
+  padding: 10px;
+  border-radius: 8px;
+  background-color: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+  text-align: center;
+}
+
+@media (max-width: 1024px) {
+  .main-content {
+    flex-direction: column;
+  }
+
+  .right-column {
+    max-width: none;
+  }
+
+  #videoFeedContainer iframe {
+    width: 100%;
+  }
+}

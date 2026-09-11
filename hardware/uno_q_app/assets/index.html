@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Object and Human Detection</title>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+  </head>
+  <body>
+    <div class="page">
+      <div class="header">
+        <h1 class="arduino-text">Object and Human Detection</h1>
+      </div>
+
+      <div class="main-content">
+        <div class="container">
+          <div id="videoFeedContainer">
+            <div id="videoPlaceholder" class="camera-status">
+              <p class="feedback-text">Searching webcam…</p>
+            </div>
+            <iframe
+              id="dynamicIframe"
+              title="Video stream"
+              width="1024"
+              height="768"
+              frameborder="0"
+              style="display: none"></iframe>
+          </div>
+        </div>
+
+        <div class="right-column">
+          <div class="container container-right">
+            <h2 class="section-title">Human presence</h2>
+            <div id="personStatus" class="person-status">
+              <span class="person-dot"></span>
+              <span id="personStatusText">No person detected</span>
+            </div>
+            <p id="personSubtext" class="feedback-text">Waiting for the first frame…</p>
+          </div>
+
+          <div class="container container-right">
+            <div class="control-confidence">
+              <label id="confidence-label" for="confidenceSlider">Confidence</label>
+              <span id="confidenceValue" class="confidence-value">0.50</span>
+            </div>
+            <div class="slider-box">
+              <span class="confidence-limits">0</span>
+              <input type="range" id="confidenceSlider" min="0" max="1" step="0.01" value="0.5" />
+              <span class="confidence-limits">1</span>
+            </div>
+          </div>
+
+          <div class="container container-right">
+            <h2 class="section-title">Recent detections</h2>
+            <ul id="recentDetections"></ul>
+          </div>
+        </div>
+      </div>
+
+      <div id="error-container" class="error-message" style="display: none"></div>
+    </div>
+
+    <script src="libs/arduino.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
