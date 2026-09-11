@@ -58,7 +58,7 @@ const int DRIVE_SPEED = 200;   // 0-255. Steering is bang-bang at this duty.
 const float MOTOR_B_TRIM = 1.00f;
 
 // ---- Lid servo --------------------------------------------------------------
-const int LID_SERVO_PIN = 16;
+const int LID_SERVO_PIN = 17;
 
 // Calibrate these from the web page slider, then set them here.
 const int LID_OPEN_ANGLE   = 90;
