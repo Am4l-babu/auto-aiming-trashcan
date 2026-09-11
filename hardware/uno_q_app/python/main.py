@@ -19,7 +19,14 @@ from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 # ---- ESP32 actuator link -----------------------------------------------------
 # The ESP32 drives the wheels and the lid servo. It joins the same WiFi and
 # serves commands over HTTP - see hardware/esp32_actuators/src/main.cpp.
-ESP32_HOST = os.environ.get("ESP32_HOST", "http://trashcan.local")
+#
+# mDNS ("trashcan.local") does NOT resolve from this board's Linux side -
+# confirmed by hand: every command silently failed with "Name or service not
+# known" even though the exact same hostname resolves fine from a Windows
+# laptop on the same network. Using the ESP32's IP directly instead. If your
+# router doesn't hand out a stable IP, override with the ESP32_HOST env var
+# rather than editing this default.
+ESP32_HOST = os.environ.get("ESP32_HOST", "http://10.38.122.18")
 ESP32_TIMEOUT_SEC = 1.0
 
 # Audio streaming: clips live here on the UNO Q's own storage (plenty of

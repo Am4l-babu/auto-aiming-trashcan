@@ -42,7 +42,7 @@ function maybePlayClip(state) {
   if (!state.clip_name) {
     return;
   }
-  clipPlayer.src = `/api/sound?name=${encodeURIComponent(state.clip_name)}`;
+  clipPlayer.src = `/sound?name=${encodeURIComponent(state.clip_name)}`;
   clipPlayer.play().catch((err) => showError('Clip playback failed: ' + err.message));
 }
 
