@@ -350,6 +350,15 @@ void streamClientAudio(WiFiClient &client) {
     xSemaphoreTake(i2sMutex, portMAX_DELAY);
     i2s_set_sample_rates(I2S_PORT, rate);
 
+    // TCP delivers bytes in whatever chunks the network happens to hand over -
+    // it has no idea a "sample" is 2 bytes (or a stereo frame is 4). A chunk
+    // boundary landing mid-sample used to shift every following sample by a
+    // byte and turn the rest of the clip to noise. carry[] holds that partial
+    // sample across reads so alignment never drifts.
+    const size_t frameBytes = channels * 2;
+    uint8_t carry[4];
+    size_t carryLen = 0;
+
     const size_t bufBytes = 1024;
     uint8_t raw[bufBytes];
     int16_t outFrame[2];
@@ -361,17 +370,22 @@ void streamClientAudio(WiFiClient &client) {
             delay(2);   // yields to other tasks on this core while waiting for more data
             continue;
         }
-        const int toRead = min(n, (int)bufBytes);
-        const int got = client.read(raw, toRead);
-        const int16_t *samples = (const int16_t *)raw;
-        const int sampleCount = got / 2;
+        memcpy(raw, carry, carryLen);
+        const int toRead = min(n, (int)(bufBytes - carryLen));
+        const int got = client.read(raw + carryLen, toRead);
+        const size_t total = carryLen + (got > 0 ? (size_t)got : 0);
+        const size_t usable = total - (total % frameBytes);
+        carryLen = total - usable;
+        memcpy(carry, raw + usable, carryLen);
 
-        for (int i = 0; i < sampleCount; ) {
+        const int16_t *samples = (const int16_t *)raw;
+        const size_t sampleUnits = usable / 2;
+
+        for (size_t i = 0; i < sampleUnits; ) {
             if (channels == 1) {
                 outFrame[0] = outFrame[1] = samples[i];
                 i += 1;
             } else {
-                if (i + 1 >= sampleCount) break;  // odd trailing sample, drop it
                 outFrame[0] = samples[i];
                 outFrame[1] = samples[i + 1];
                 i += 2;
