@@ -215,9 +215,15 @@ void i2sInit() {
         .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 4,
-        .dma_buf_len = 256,
-        .use_apll = false,
+        // Deep enough to absorb a WiFi delivery hiccup without the DMA
+        // underrunning and auto-clearing to silence mid-clip - 8*1024
+        // frames gives ~170ms of headroom at 48kHz, versus ~21ms before.
+        .dma_buf_count = 8,
+        .dma_buf_len = 1024,
+        // The plain APB clock can't divide down to standard rates like 48kHz
+        // accurately (only clean-dividing rates like 16000 work without
+        // this) - the APLL gives a precise fractional-N clock instead.
+        .use_apll = true,
         .tx_desc_auto_clear = true,
     };
     const i2s_pin_config_t pins = {
@@ -348,7 +354,11 @@ void streamClientAudio(WiFiClient &client) {
     Serial.println(channels);
 
     xSemaphoreTake(i2sMutex, portMAX_DELAY);
-    i2s_set_sample_rates(I2S_PORT, rate);
+    const esp_err_t rateErr = i2s_set_sample_rates(I2S_PORT, rate);
+    if (rateErr != ESP_OK) {
+        Serial.print("EVT audio stream: i2s_set_sample_rates failed, err=");
+        Serial.println((int)rateErr);
+    }
 
     // TCP delivers bytes in whatever chunks the network happens to hand over -
     // it has no idea a "sample" is 2 bytes (or a stereo frame is 4). A chunk
@@ -359,9 +369,20 @@ void streamClientAudio(WiFiClient &client) {
     uint8_t carry[4];
     size_t carryLen = 0;
 
-    const size_t bufBytes = 1024;
-    uint8_t raw[bufBytes];
-    int16_t outFrame[2];
+    // One i2s_write() per audio FRAME (a handful of bytes) was fine for a
+    // short, low-rate clip, but at 48kHz stereo that is well over 100,000
+    // calls for a 3-second clip - the per-call overhead cannot keep up in
+    // real time and the I2S DMA buffer starves, which is heard as hiss/static
+    // rather than the actual audio. Writing one whole chunk per i2s_write()
+    // call instead cuts that by three orders of magnitude.
+    // Bigger than one DMA buffer's worth, so a single socket read can refill
+    // several DMA buffers at once - smooths over bursty WiFi delivery instead
+    // of the DMA needing a fresh chunk every ~5ms. static: these are too big
+    // for this task's stack, and only one stream plays at a time anyway.
+    const size_t bufBytes = 4096;
+    static uint8_t raw[bufBytes];
+    // Worst case is mono: every input sample doubles into an L+R output pair.
+    static int16_t monoOut[bufBytes];
     size_t written;
 
     while (client.connected() || client.available()) {
@@ -378,19 +399,20 @@ void streamClientAudio(WiFiClient &client) {
         carryLen = total - usable;
         memcpy(carry, raw + usable, carryLen);
 
-        const int16_t *samples = (const int16_t *)raw;
-        const size_t sampleUnits = usable / 2;
+        if (usable == 0) continue;
 
-        for (size_t i = 0; i < sampleUnits; ) {
-            if (channels == 1) {
-                outFrame[0] = outFrame[1] = samples[i];
-                i += 1;
-            } else {
-                outFrame[0] = samples[i];
-                outFrame[1] = samples[i + 1];
-                i += 2;
+        if (channels == 2) {
+            // Already interleaved L/R 16-bit - exactly the I2S wire format,
+            // so this chunk goes straight out with no per-sample copying.
+            i2s_write(I2S_PORT, raw, usable, &written, portMAX_DELAY);
+        } else {
+            const int16_t *samples = (const int16_t *)raw;
+            const size_t sampleCount = usable / 2;
+            for (size_t i = 0; i < sampleCount; i++) {
+                monoOut[i * 2]     = samples[i];
+                monoOut[i * 2 + 1] = samples[i];
             }
-            i2s_write(I2S_PORT, outFrame, sizeof(outFrame), &written, portMAX_DELAY);
+            i2s_write(I2S_PORT, monoOut, sampleCount * 2 * sizeof(int16_t), &written, portMAX_DELAY);
         }
     }
 
@@ -592,7 +614,7 @@ void setup() {
     audioServer.begin();
     // Pinned to core 0 - the main loop (motors, servo, HTTP commands) runs on
     // core 1 by default and must never be blocked by a long audio stream.
-    xTaskCreatePinnedToCore(audioTask, "audioStream", 4096, nullptr, 1, nullptr, 0);
+    xTaskCreatePinnedToCore(audioTask, "audioStream", 8192, nullptr, 1, nullptr, 0);
     Serial.print("AUDIO stream server on port ");
     Serial.println(AUDIO_STREAM_PORT);
 
