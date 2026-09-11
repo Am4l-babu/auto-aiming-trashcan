@@ -16,7 +16,8 @@ USB camera -> UNO Q (YOLOX-nano, this folder) --WiFi/HTTP--> ESP32 -> wheels + l
 
 | Path | Runs on | Purpose |
 |---|---|---|
-| `python/main.py` | Linux side (App Lab Python brick) | Detection, target selection, throw detection, commands to the ESP32, web UI |
+| `python/main.py` | Linux side (App Lab Python brick) | Detection, target selection, throw detection, commands to the ESP32, audio streaming, web UI |
+| `python/sounds/` | Linux side | Your WAV files (gitignored) - streamed live to the ESP32's speaker, see its README |
 | `sketch/sketch.ino` | STM32 MCU side | Nothing - actuation is on the ESP32. Kept as the place to add UNO Q-attached hardware later |
 | `assets/` | Linux side | Web UI frontend (live feed + bounding boxes) |
 | `app.yaml` | App Lab | Declares the bricks this app uses (`video_object_detection`, `web_ui`) |
@@ -36,10 +37,25 @@ USB camera -> UNO Q (YOLOX-nano, this folder) --WiFi/HTTP--> ESP32 -> wheels + l
    "incoming".
 5. `THROW_COOLDOWN_SEC` (6 s) covers the ESP32's 4 s shut-and-reopen cycle so
    one throw cannot re-trigger the lid repeatedly.
+6. The same moment `THROWN` goes out, `play_sound(THROWN_SOUND)` queues
+   `sounds/denied.wav` for streaming to the ESP32's speaker - silently
+   skipped if that file does not exist, so a missing sound effect can never
+   be the reason the refusal itself fails to happen.
 
-Commands go out on a worker thread and are dropped if the queue backs up - a
-slow or missing ESP32 slows nothing down, and a stale aim update is worth
-less than a fresh one.
+Commands and audio each go out on their own worker thread and are dropped if
+their queue backs up - a slow or missing ESP32 slows nothing down, a stale
+aim update is worth less than a fresh one, and a multi-minute clip must never
+make aim updates pile up behind it.
+
+## Audio
+
+WAV files in `python/sounds/` are streamed - not copied - to the ESP32's
+speaker over a raw TCP socket (port 8081), so there is no practical size
+limit; they live on the UNO Q's own storage, which is orders of magnitude
+bigger than the ESP32's flash. See `python/sounds/README.md` for the file
+format and `play_sound(name)` / `GET /play?name=<name>` to trigger one
+manually. `/detections` shows the last clip played and its status under
+`audio` - check that first if a sound doesn't play.
 
 ## Tuning
 
@@ -50,13 +66,16 @@ less than a fresh one.
 | `AIM_DEADZONE` | 0.15. Widen it if the trashcan oscillates around a centered target |
 | `THROWABLE` | Which COCO classes count as rubbish rather than scenery |
 | `debounce_sec` | 1.0 on the detector, so aim updates cap at ~1/sec. Lower it if the machine reacts too slowly |
+| `ESP32_AUDIO_HOST` | Where to stream audio. Defaults to the host part of `ESP32_HOST`; override separately if audio and commands ever need different addresses |
+| `THROWN_SOUND` | Clip name (without `.wav`) played automatically on every throw refusal |
 
 ## Running it
 
 Open this folder in Arduino App Lab with the UNO Q connected and deploy. The
 web UI serves the annotated camera feed, plus `/detections` (includes the
-last command sent to the ESP32 and its reply - the first place to look when
-nothing moves), `/confidence` and `/open`.
+last command sent to the ESP32 and its reply, and the last audio clip played -
+the first place to look when nothing moves or nothing plays), `/confidence`,
+`/open` and `/play`.
 
 Flash and power the ESP32 first, and confirm `http://trashcan.local/` loads
 from your phone. If the web UI shows `unreachable` under `esp32`, the two

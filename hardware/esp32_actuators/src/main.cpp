@@ -19,7 +19,15 @@
 //                   use it to find your real OPEN/CLOSED angles.
 //    BEEP           play a short test tone through the speaker. Link check
 //                   for the MAX98357A, same role PING plays for the network.
+//    PLAY <name>    play /<name>.wav from this board's own flash (LittleFS) -
+//                   for small clips baked in at build time via uploadfs.
 //    PING           replies "PONG". Link check.
+//
+//  Large/many clips do not fit on this board's flash. For those, the UNO Q
+//  keeps the files on its own storage and streams raw PCM to TCP port 8081:
+//  connect, send a 5-byte header (4-byte LE sample rate + 1-byte channel
+//  count), then just write samples until the socket closes. Runs on core 0,
+//  independent of the motor/servo loop, so a long clip never blocks steering.
 //
 //  OVER WIFI    GET http://<ip>/cmd?c=THROWN
 //               GET http://<ip>/         control page, works from a phone
@@ -38,6 +46,8 @@
 #include <ESPmDNS.h>
 #include <driver/i2s.h>
 #include <math.h>
+#include <FS.h>
+#include <LittleFS.h>
 #include "secrets.h"
 
 // ---- Motor driver (L298N) ---------------------------------------------------
@@ -66,8 +76,8 @@ const float MOTOR_B_TRIM = 1.00f;
 const int LID_SERVO_PIN = 17;
 
 // Calibrate these from the web page slider, then set them here.
-const int LID_OPEN_ANGLE   = 90;
-const int LID_CLOSED_ANGLE = 0;
+const int LID_OPEN_ANGLE   = 180;
+const int LID_CLOSED_ANGLE = 90;
 
 const uint16_t SERVO_MIN_US = 500;
 const uint16_t SERVO_MAX_US = 2400;
@@ -89,6 +99,16 @@ const int I2S_DOUT_PIN = 23;   // DIN on the amp
 
 const int I2S_SAMPLE_RATE = 16000;
 const i2s_port_t I2S_PORT = I2S_NUM_0;
+
+// Raw PCM audio streaming, for clips too large to fit on this board's flash.
+// The UNO Q keeps the actual audio files on its own storage and streams the
+// samples over this socket live; nothing is ever copied onto the ESP32.
+// Runs on core 0 in its own task so a multi-minute clip can never block the
+// motor/servo loop, which stays on core 1 and must keep running to enforce
+// AIM_TIMEOUT_MS.
+const uint16_t AUDIO_STREAM_PORT = 8081;
+WiFiServer audioServer(AUDIO_STREAM_PORT);
+SemaphoreHandle_t i2sMutex;
 
 Servo     lidServo;
 WebServer server(80);
@@ -212,8 +232,10 @@ void i2sInit() {
 
 // Blocking - only ever called from a manual command, never from the aim/lid
 // loop, so a few hundred ms of block here does not affect steering or safety
-// timing.
+// timing. Long clips go through the streaming path below instead, on the
+// other core, precisely so they never end up blocking here.
 void playTone(float freqHz, uint16_t durationMs, float volume = 0.5f) {
+    xSemaphoreTake(i2sMutex, portMAX_DELAY);
     const int samples = (I2S_SAMPLE_RATE * durationMs) / 1000;
     int16_t frame[2];
     size_t written;
@@ -224,12 +246,156 @@ void playTone(float freqHz, uint16_t durationMs, float volume = 0.5f) {
         frame[1] = sample;
         i2s_write(I2S_PORT, frame, sizeof(frame), &written, portMAX_DELAY);
     }
+    xSemaphoreGive(i2sMutex);
 }
 
 void playTestChirp() {
     // Two quick rising notes - unmistakable over a silent, unbeeping board.
     playTone(880.0f, 120, 0.5f);
     playTone(1318.5f, 160, 0.5f);
+}
+
+// Minimal WAV reader: assumes the canonical 44-byte header (16-bit PCM,
+// mono or stereo) written by any standard export - Audacity, ffmpeg,
+// Python's wave module. Anything more exotic (extra chunks, float samples,
+// compressed formats) is not handled and will just play as noise or fail
+// the sanity checks below.
+struct WavInfo {
+    uint16_t channels;
+    uint32_t sampleRate;
+    uint16_t bitsPerSample;
+    uint32_t dataSize;
+};
+
+bool readWavHeader(File &f, WavInfo &info) {
+    uint8_t header[44];
+    if (f.read(header, 44) != 44) return false;
+    if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) return false;
+
+    info.channels      = header[22] | (header[23] << 8);
+    info.sampleRate     = header[24] | (header[25] << 8) | (header[26] << 16) | ((uint32_t)header[27] << 24);
+    info.bitsPerSample = header[34] | (header[35] << 8);
+    info.dataSize       = header[40] | (header[41] << 8) | (header[42] << 16) | ((uint32_t)header[43] << 24);
+    return info.bitsPerSample == 16 && (info.channels == 1 || info.channels == 2);
+}
+
+// Streams a file straight off flash rather than loading it into RAM - clips
+// can be longer than free heap allows. Re-initializes the I2S clock to match
+// the file's own sample rate, so clips don't need to share one fixed rate.
+String playWavFile(const String &name) {
+    const String path = "/" + name + ".wav";
+    if (!LittleFS.exists(path)) return "ERR no such clip: " + path;
+
+    File f = LittleFS.open(path, "r");
+    if (!f) return "ERR could not open " + path;
+
+    WavInfo info;
+    if (!readWavHeader(f, info)) {
+        f.close();
+        return "ERR " + path + " is not a 16-bit PCM WAV";
+    }
+
+    xSemaphoreTake(i2sMutex, portMAX_DELAY);
+    i2s_set_sample_rates(I2S_PORT, info.sampleRate);
+
+    const size_t bufSamples = 512;
+    int16_t inBuf[bufSamples];
+    int16_t outFrame[2];
+    size_t written;
+
+    while (f.available()) {
+        const size_t got = f.read((uint8_t *)inBuf, sizeof(inBuf)) / sizeof(int16_t);
+        for (size_t i = 0; i < got; ) {
+            if (info.channels == 1) {
+                outFrame[0] = outFrame[1] = inBuf[i];
+                i += 1;
+            } else {
+                outFrame[0] = inBuf[i];
+                outFrame[1] = inBuf[i + 1];
+                i += 2;
+            }
+            i2s_write(I2S_PORT, outFrame, sizeof(outFrame), &written, portMAX_DELAY);
+        }
+    }
+
+    f.close();
+    i2s_set_sample_rates(I2S_PORT, I2S_SAMPLE_RATE);  // restore default for playTone()/BEEP
+    xSemaphoreGive(i2sMutex);
+    return "OK played " + path;
+}
+
+// ---- Audio streaming (large clips, held on the UNO Q's own storage) --------
+// Wire protocol, deliberately tiny: the client (UNO Q) connects, sends a
+// 5-byte header - 4-byte little-endian sample rate + 1-byte channel count
+// (1 or 2) - then just writes raw signed 16-bit PCM until it closes the
+// socket. No length prefix needed: EOF is the end of the clip.
+void streamClientAudio(WiFiClient &client) {
+    uint8_t hdr[5];
+    if (client.readBytes(hdr, sizeof(hdr)) != sizeof(hdr)) {
+        Serial.println("EVT audio stream: short header, dropping connection");
+        return;
+    }
+    const uint32_t rate = hdr[0] | (hdr[1] << 8) | (hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+    const uint8_t channels = hdr[4];
+    if (channels != 1 && channels != 2) {
+        Serial.println("EVT audio stream: bad channel count, dropping connection");
+        return;
+    }
+
+    Serial.print("EVT audio stream started, rate=");
+    Serial.print(rate);
+    Serial.print(" ch=");
+    Serial.println(channels);
+
+    xSemaphoreTake(i2sMutex, portMAX_DELAY);
+    i2s_set_sample_rates(I2S_PORT, rate);
+
+    const size_t bufBytes = 1024;
+    uint8_t raw[bufBytes];
+    int16_t outFrame[2];
+    size_t written;
+
+    while (client.connected() || client.available()) {
+        const int n = client.available();
+        if (n <= 0) {
+            delay(2);   // yields to other tasks on this core while waiting for more data
+            continue;
+        }
+        const int toRead = min(n, (int)bufBytes);
+        const int got = client.read(raw, toRead);
+        const int16_t *samples = (const int16_t *)raw;
+        const int sampleCount = got / 2;
+
+        for (int i = 0; i < sampleCount; ) {
+            if (channels == 1) {
+                outFrame[0] = outFrame[1] = samples[i];
+                i += 1;
+            } else {
+                if (i + 1 >= sampleCount) break;  // odd trailing sample, drop it
+                outFrame[0] = samples[i];
+                outFrame[1] = samples[i + 1];
+                i += 2;
+            }
+            i2s_write(I2S_PORT, outFrame, sizeof(outFrame), &written, portMAX_DELAY);
+        }
+    }
+
+    i2s_set_sample_rates(I2S_PORT, I2S_SAMPLE_RATE);
+    xSemaphoreGive(i2sMutex);
+    Serial.println("EVT audio stream ended");
+}
+
+// Runs on core 0, forever, independent of the main motor/servo loop on core 1.
+void audioTask(void *param) {
+    (void)param;
+    for (;;) {
+        if (audioServer.hasClient()) {
+            WiFiClient client = audioServer.accept();
+            streamClientAudio(client);
+            client.stop();
+        }
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
 }
 
 // ---- Command handling (shared by WiFi and serial) ---------------------------
@@ -267,6 +433,12 @@ String handleCommand(String line) {
     } else if (line == "BEEP") {
         playTestChirp();
         return "OK BEEP";
+
+    } else if (line.startsWith("PLAY")) {
+        String name = line.substring(4);
+        name.trim();
+        if (name.length() == 0) return "ERR PLAY needs a clip name, e.g. PLAY denied";
+        return playWavFile(name);
 
     } else if (line == "PING") {
         return "PONG";
@@ -343,6 +515,8 @@ void handleStatus() {
 void setup() {
     Serial.begin(115200);
 
+    i2sMutex = xSemaphoreCreateMutex();
+
     pinMode(IN1, OUTPUT);
     pinMode(IN2, OUTPUT);
     pinMode(IN3, OUTPUT);
@@ -360,6 +534,12 @@ void setup() {
     lidServo.write(LID_OPEN_ANGLE);
 
     i2sInit();
+
+    if (!LittleFS.begin(true)) {
+        Serial.println("LITTLEFS mount failed - PLAY will not work until reflashed with uploadfs");
+    } else {
+        Serial.println("LITTLEFS mounted");
+    }
 
     Serial.println();
     Serial.println("BOOT auto-aiming-trashcan esp32 actuators");
@@ -395,7 +575,14 @@ void setup() {
     server.on("/status", handleStatus);
     server.begin();
 
-    Serial.println("READY cmds: AIM <-1..1> | THROWN | OPEN | STOP | LID <angle> | BEEP | PING");
+    audioServer.begin();
+    // Pinned to core 0 - the main loop (motors, servo, HTTP commands) runs on
+    // core 1 by default and must never be blocked by a long audio stream.
+    xTaskCreatePinnedToCore(audioTask, "audioStream", 4096, nullptr, 1, nullptr, 0);
+    Serial.print("AUDIO stream server on port ");
+    Serial.println(AUDIO_STREAM_PORT);
+
+    Serial.println("READY cmds: AIM <-1..1> | THROWN | OPEN | STOP | LID <angle> | BEEP | PLAY <name> | PING");
 }
 
 void loop() {

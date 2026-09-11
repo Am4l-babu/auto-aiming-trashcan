@@ -16,13 +16,16 @@ whatever is incoming and tells the ESP32 which way to steer, so the bin makes
 a convincing show of getting under the throw. When the object's apparent size
 says it is about to arrive, the UNO Q sends `THROWN` and the ESP32 shuts the
 lid in 180 ms. Four seconds later the lid reopens, ready for the next person.
+The same moment, a refusal sound streams live from the UNO Q's storage to the
+ESP32's speaker - kept off the ESP32's tiny flash so clips can be as long as
+you like.
 
 ## What's here
 
 | Path | What it is |
 |---|---|
-| `hardware/uno_q_app/` | Arduino UNO Q app: USB camera, YOLOX-nano detection, target picking, throw detection, web UI |
-| `hardware/esp32_actuators/` | ESP32 firmware: L298N wheels, lid servo on GPIO 16, WiFi + serial command interface, phone control page |
+| `hardware/uno_q_app/` | Arduino UNO Q app: USB camera, YOLOX-nano detection, target picking, throw detection, audio streaming, web UI |
+| `hardware/esp32_actuators/` | ESP32 firmware: L298N wheels, lid servo on GPIO 17, MAX98357A speaker, WiFi + serial command interface, phone control page |
 | `config.py`, `environment.py`, `main.py`, `physics.py`, `simulation.py`, `trajectory.py`, `trash_can.py` | PyBullet physics simulation of the catching problem - no hardware involved, independent of the two folders above |
 
 ## Bring-up order

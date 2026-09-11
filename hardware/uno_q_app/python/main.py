@@ -1,10 +1,14 @@
 import os
 import queue
+import socket
+import struct
 import threading
 import urllib.parse
 import urllib.request
+import wave
 from collections import deque
 from datetime import datetime, UTC
+from pathlib import Path
 
 from arduino.app_utils import App
 from arduino.app_bricks.web_ui import WebUI
@@ -15,6 +19,19 @@ from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 # serves commands over HTTP - see hardware/esp32_actuators/src/main.cpp.
 ESP32_HOST = os.environ.get("ESP32_HOST", "http://trashcan.local")
 ESP32_TIMEOUT_SEC = 1.0
+
+# Audio streaming: clips live here on the UNO Q's own storage (plenty of
+# room for minutes of audio, unlike the ESP32's flash) and are streamed live
+# to the ESP32's speaker over a raw TCP socket - see the "Audio streaming"
+# section in hardware/esp32_actuators/src/main.cpp for the wire protocol.
+ESP32_AUDIO_HOST = os.environ.get("ESP32_AUDIO_HOST", ESP32_HOST.split("://")[-1])
+ESP32_AUDIO_PORT = 8081
+SOUNDS_DIR = Path(__file__).parent / "sounds"
+
+# Played automatically when the lid slams on a throw, if the file exists.
+# Silently skipped otherwise - a missing sound effect should never be the
+# reason the throw-refusal itself fails to happen.
+THROWN_SOUND = "denied"
 
 # How long after the last "person" sighting we still consider a human present.
 PERSON_HOLD_SEC = 3.0
@@ -85,6 +102,59 @@ def send(cmd: str):
     Aim updates are worthless once stale, so dropping beats blocking."""
     try:
         _commands.put_nowait(cmd)
+    except queue.Full:
+        pass
+
+
+# Audio plays on its own worker, separate from _commands: a multi-minute
+# clip must never make AIM updates back up behind it.
+_audio_queue: "queue.Queue[str]" = queue.Queue(maxsize=2)
+last_audio = "none"
+
+
+def _stream_wav(path: Path) -> str:
+    with wave.open(str(path), "rb") as w:
+        channels = w.getnchannels()
+        rate = w.getframerate()
+        width = w.getsampwidth()
+        if width != 2:
+            return f"ERR {path.name} is not 16-bit PCM (got {width * 8}-bit)"
+        if channels not in (1, 2):
+            return f"ERR {path.name} has unsupported channel count {channels}"
+
+        header = struct.pack("<IB", rate, channels)
+        with socket.create_connection((ESP32_AUDIO_HOST, ESP32_AUDIO_PORT), timeout=5) as s:
+            s.sendall(header)
+            chunk = w.readframes(4096)
+            while chunk:
+                s.sendall(chunk)
+                chunk = w.readframes(4096)
+        return f"OK streamed {path.name} ({rate}Hz, {channels}ch)"
+
+
+def _audio_worker():
+    global last_audio
+    while True:
+        name = _audio_queue.get()
+        path = SOUNDS_DIR / f"{name}.wav"
+        try:
+            if not path.exists():
+                last_audio = f"{name} -> ERR file not found: {path}"
+                continue
+            last_audio = f"{name} -> {_stream_wav(path)}"
+        except Exception as e:
+            last_audio = f"{name} -> ERR {e}"
+
+
+threading.Thread(target=_audio_worker, name="esp32-audio", daemon=True).start()
+
+
+def play_sound(name: str):
+    """Queues a clip by name (sounds/<name>.wav) for streaming to the ESP32.
+    Drops the request if a clip is already queued - never blocks the caller,
+    and never worth playing two clips on top of each other anyway."""
+    try:
+        _audio_queue.put_nowait(name)
     except queue.Full:
         pass
 
@@ -162,6 +232,7 @@ def on_detections(detections: dict):
         with lock:
             last_throw_at = now
         send("THROWN")
+        play_sound(THROWN_SOUND)
         return
 
     send(f"AIM {_offset(bbox):.3f}")
@@ -182,6 +253,7 @@ def get_detections():
             "last_person_seen": last_person_seen.isoformat() if last_person_seen else None,
             "last_throw": last_throw_at.isoformat() if last_throw_at else None,
             "esp32": {"host": ESP32_HOST, "last_command": last_command},
+            "audio": {"host": ESP32_AUDIO_HOST, "port": ESP32_AUDIO_PORT, "last_clip": last_audio},
             "detections": list(recent),
         }
 
@@ -196,8 +268,14 @@ def lid_open():
     return {"sent": "OPEN"}
 
 
+def play(name: str):
+    play_sound(name)
+    return {"queued": name}
+
+
 ui.expose_api("GET", "/detections", get_detections)
 ui.expose_api("GET", "/confidence", set_confidence)
 ui.expose_api("GET", "/open", lid_open)
+ui.expose_api("GET", "/play", play)
 
 App.run()

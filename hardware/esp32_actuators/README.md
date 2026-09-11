@@ -20,6 +20,8 @@ person.
 | `OPEN` | Reopen the lid |
 | `STOP` | Stop the wheels |
 | `LID <angle>` | Drive the servo to a raw angle - use this to find your real open/closed angles |
+| `BEEP` | Play a short built-in test tone through the speaker |
+| `PLAY <name>` | Play `/<name>.wav` from this board's own flash (see Audio below) |
 | `PING` | Replies `PONG` |
 
 Over WiFi: `GET http://trashcan.local/cmd?c=THROWN` (or use the board's IP).
@@ -36,11 +38,38 @@ Over serial: type the command at 115200 baud.
 | L298N ENA / ENB | 18 / 19 |
 | L298N IN1 / IN2 (motor A) | 27 / 26 |
 | L298N IN3 / IN4 (motor B) | 25 / 33 |
-| Lid servo signal | 16 |
+| Lid servo signal | 17 |
+| MAX98357A DIN / BCLK / LRC | 23 / 22 / 21 |
 
 The servo needs its own 5 V supply - not the ESP32's 3V3 pin - with grounds
-tied together. Same for the motor supply: shared rails brown the board out
-and drop it off WiFi mid-demo.
+tied together. Same for the motor supply and the speaker amp's VIN: shared
+rails brown the board out and drop it off WiFi mid-demo.
+
+## Audio
+
+Two ways to make sound, for two different sizes of clip:
+
+**Small clips baked onto this board** - `PLAY <name>` plays `/<name>.wav`
+from this board's own LittleFS flash partition. Good for a handful of short
+effects; the partition only has a couple MB, so this is not for anything
+long. Upload clips with:
+
+```bash
+mkdir -p data && cp your_clip.wav data/your_clip.wav
+pio run -t uploadfs --upload-port COM6
+```
+
+**Large or many clips, kept on the UNO Q** - the UNO Q has real storage and
+keeps the actual files; it streams raw PCM to this board's TCP port 8081
+live, so nothing is ever copied onto the ESP32 and there is no size limit
+beyond the UNO Q's own disk. See `hardware/uno_q_app/python/sounds/` for
+where those files go and `stream_test.py` in this folder for a minimal
+example of the wire protocol (5-byte header, then raw 16-bit PCM until the
+socket closes) if you want to stream from something other than the UNO Q.
+
+Streaming runs on the ESP32's second CPU core, independent of the motor/servo
+loop - a multi-minute clip playing will never delay the wheels stopping on
+command.
 
 ## Build
 
