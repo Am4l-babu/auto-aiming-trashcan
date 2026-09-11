@@ -17,6 +17,8 @@
 //    STOP           stop the wheels.
 //    LID <angle>    drive the lid servo to a raw angle. Calibration aid:
 //                   use it to find your real OPEN/CLOSED angles.
+//    BEEP           play a short test tone through the speaker. Link check
+//                   for the MAX98357A, same role PING plays for the network.
 //    PING           replies "PONG". Link check.
 //
 //  OVER WIFI    GET http://<ip>/cmd?c=THROWN
@@ -24,15 +26,18 @@
 //  OVER SERIAL  type the command at 115200 baud
 //
 //  WIRING
-//    L298N  ENA 18  ENB 19  IN1 27  IN2 26  IN3 25  IN4 33
-//    Lid servo signal -> GPIO 16, servo V+ -> its own 5V supply (NOT the
+//    L298N     ENA 18  ENB 19  IN1 27  IN2 26  IN3 25  IN4 33
+//    Lid servo signal -> GPIO 17, servo V+ -> its own 5V supply (NOT the
 //    ESP32 3V3 pin), servo GND -> common ground with the ESP32.
+//    MAX98357A DIN 23  BCLK 22  LRC/WS 21  GND -> GND  VIN -> 5V
 // =============================================================================
 #include <Arduino.h>
 #include <ESP32Servo.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include <driver/i2s.h>
+#include <math.h>
 #include "secrets.h"
 
 // ---- Motor driver (L298N) ---------------------------------------------------
@@ -76,6 +81,14 @@ const uint32_t LID_SHUT_HOLD_MS = 4000;
 
 // Stop the wheels if the UNO Q goes quiet - never keep driving blind.
 const uint32_t AIM_TIMEOUT_MS = 1000;
+
+// ---- Speaker (MAX98357A, I2S) ------------------------------------------------
+const int I2S_BCLK_PIN = 22;
+const int I2S_WS_PIN   = 21;   // LRC
+const int I2S_DOUT_PIN = 23;   // DIN on the amp
+
+const int I2S_SAMPLE_RATE = 16000;
+const i2s_port_t I2S_PORT = I2S_NUM_0;
 
 Servo     lidServo;
 WebServer server(80);
@@ -173,6 +186,52 @@ void updateLid() {
     }
 }
 
+// ---- Speaker ------------------------------------------------------------
+void i2sInit() {
+    const i2s_config_t config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+        .sample_rate = I2S_SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = 256,
+        .use_apll = false,
+        .tx_desc_auto_clear = true,
+    };
+    const i2s_pin_config_t pins = {
+        .bck_io_num = I2S_BCLK_PIN,
+        .ws_io_num = I2S_WS_PIN,
+        .data_out_num = I2S_DOUT_PIN,
+        .data_in_num = I2S_PIN_NO_CHANGE,
+    };
+    i2s_driver_install(I2S_PORT, &config, 0, nullptr);
+    i2s_set_pin(I2S_PORT, &pins);
+}
+
+// Blocking - only ever called from a manual command, never from the aim/lid
+// loop, so a few hundred ms of block here does not affect steering or safety
+// timing.
+void playTone(float freqHz, uint16_t durationMs, float volume = 0.5f) {
+    const int samples = (I2S_SAMPLE_RATE * durationMs) / 1000;
+    int16_t frame[2];
+    size_t written;
+    for (int i = 0; i < samples; i++) {
+        const float t = (float)i / (float)I2S_SAMPLE_RATE;
+        const int16_t sample = (int16_t)(sinf(2.0f * (float)M_PI * freqHz * t) * volume * 32000.0f);
+        frame[0] = sample;
+        frame[1] = sample;
+        i2s_write(I2S_PORT, frame, sizeof(frame), &written, portMAX_DELAY);
+    }
+}
+
+void playTestChirp() {
+    // Two quick rising notes - unmistakable over a silent, unbeeping board.
+    playTone(880.0f, 120, 0.5f);
+    playTone(1318.5f, 160, 0.5f);
+}
+
 // ---- Command handling (shared by WiFi and serial) ---------------------------
 String handleCommand(String line) {
     line.trim();
@@ -204,6 +263,10 @@ String handleCommand(String line) {
         const int angle = line.substring(3).toInt();
         moveLid(angle, LID_OPEN_MS);
         return "OK LID " + String(angle);
+
+    } else if (line == "BEEP") {
+        playTestChirp();
+        return "OK BEEP";
 
     } else if (line == "PING") {
         return "PONG";
@@ -245,6 +308,7 @@ font-family:monospace;font-size:.8rem;color:#6f6;min-height:1.2em}
 <button class=slam onclick="c('THROWN')">SLAM LID (refuse)</button>
 <button onclick="c('OPEN')">Open lid</button>
 <button onclick="c('STOP')">Stop wheels</button>
+<button onclick="c('BEEP')">Test speaker</button>
 <label>Lid angle: <span id=a>90</span>&deg;</label>
 <input type=range min=0 max=180 value=90 oninput="a.textContent=this.value"
 onchange="c('LID '+this.value)">
@@ -295,6 +359,8 @@ void setup() {
     lidAngle = LID_OPEN_ANGLE;
     lidServo.write(LID_OPEN_ANGLE);
 
+    i2sInit();
+
     Serial.println();
     Serial.println("BOOT auto-aiming-trashcan esp32 actuators");
 
@@ -329,7 +395,7 @@ void setup() {
     server.on("/status", handleStatus);
     server.begin();
 
-    Serial.println("READY cmds: AIM <-1..1> | THROWN | OPEN | STOP | LID <angle> | PING");
+    Serial.println("READY cmds: AIM <-1..1> | THROWN | OPEN | STOP | LID <angle> | BEEP | PING");
 }
 
 void loop() {
