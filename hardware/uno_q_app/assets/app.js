@@ -7,6 +7,44 @@ const personStatusText = document.getElementById('personStatusText');
 const personSubtext = document.getElementById('personSubtext');
 const confidenceSlider = document.getElementById('confidenceSlider');
 const confidenceValue = document.getElementById('confidenceValue');
+const clipPlayer = document.getElementById('clipPlayer');
+const enableSoundBtn = document.getElementById('enableSoundBtn');
+
+// Phone browsers refuse to autoplay audio until the page has had a real tap.
+// This button plays a silent, near-instant clip once to "unlock" audio for
+// the rest of the session - after that, unattended play() calls triggered by
+// polling below are allowed.
+let soundEnabled = false;
+enableSoundBtn.addEventListener('click', () => {
+  clipPlayer.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+  clipPlayer.play()
+    .then(() => {
+      soundEnabled = true;
+      enableSoundBtn.textContent = '🔊 Sound enabled';
+      enableSoundBtn.disabled = true;
+    })
+    .catch((err) => showError('Could not enable sound: ' + err.message));
+});
+
+// undefined until the first poll: that first value is a baseline (whatever
+// clip last played before this page was even open), never something to play.
+let lastClipSeq;
+
+function maybePlayClip(state) {
+  if (lastClipSeq === undefined) {
+    lastClipSeq = state.clip_seq;
+    return;
+  }
+  if (!soundEnabled || state.clip_seq === lastClipSeq) {
+    return;
+  }
+  lastClipSeq = state.clip_seq;
+  if (!state.clip_name) {
+    return;
+  }
+  clipPlayer.src = `/api/sound?name=${encodeURIComponent(state.clip_name)}`;
+  clipPlayer.play().catch((err) => showError('Clip playback failed: ' + err.message));
+}
 
 // The detection brick publishes the annotated stream on its own port.
 const iframe = document.getElementById('dynamicIframe');
@@ -91,6 +129,7 @@ async function refresh() {
     clearError();
     renderPerson(state);
     renderDetections(state.detections);
+    maybePlayClip(state);
   } catch (err) {
     showError('Cannot reach the board: ' + err.message);
   }

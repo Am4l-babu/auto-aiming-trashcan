@@ -10,6 +10,8 @@ from collections import deque
 from datetime import datetime, UTC
 from pathlib import Path
 
+from fastapi import Response
+
 from arduino.app_utils import App
 from arduino.app_bricks.web_ui import WebUI
 from arduino.app_bricks.video_objectdetection import VideoObjectDetection
@@ -111,6 +113,13 @@ def send(cmd: str):
 _audio_queue: "queue.Queue[str]" = queue.Queue(maxsize=2)
 last_audio = "none"
 
+# Browser playback (phone via the WebUI) is independent of the ESP32 stream -
+# both are triggered by the same play_sound() call, and each works whether or
+# not the other is reachable. The page polls /detections (already does, every
+# 500ms) and plays a clip whenever clip_seq changes.
+browser_clip_seq = 0
+browser_clip_name = None
+
 
 def _stream_wav(path: Path) -> str:
     with wave.open(str(path), "rb") as w:
@@ -150,13 +159,18 @@ threading.Thread(target=_audio_worker, name="esp32-audio", daemon=True).start()
 
 
 def play_sound(name: str):
-    """Queues a clip by name (sounds/<name>.wav) for streaming to the ESP32.
-    Drops the request if a clip is already queued - never blocks the caller,
-    and never worth playing two clips on top of each other anyway."""
+    """Triggers a clip by name (sounds/<name>.wav) on every audio output this
+    app knows about - the ESP32 speaker (streamed) and any phone with the web
+    UI open (polls and plays it). Each is independent: a missing/unreachable
+    ESP32 never stops the phone from playing, and vice versa."""
+    global browser_clip_seq, browser_clip_name
     try:
         _audio_queue.put_nowait(name)
     except queue.Full:
         pass
+    with lock:
+        browser_clip_seq += 1
+        browser_clip_name = name
 
 
 def _area_frac(bbox) -> float:
@@ -254,6 +268,8 @@ def get_detections():
             "last_throw": last_throw_at.isoformat() if last_throw_at else None,
             "esp32": {"host": ESP32_HOST, "last_command": last_command},
             "audio": {"host": ESP32_AUDIO_HOST, "port": ESP32_AUDIO_PORT, "last_clip": last_audio},
+            "clip_seq": browser_clip_seq,
+            "clip_name": browser_clip_name,
             "detections": list(recent),
         }
 
@@ -273,9 +289,21 @@ def play(name: str):
     return {"queued": name}
 
 
+def serve_sound(name: str):
+    """Serves sounds/<name>.wav for the browser's <audio> element to play.
+    name is user-supplied (query param), so it is resolved against SOUNDS_DIR
+    and checked to still be inside it before serving - otherwise "../../etc"
+    style names could read arbitrary files off the board."""
+    path = (SOUNDS_DIR / f"{name}.wav").resolve()
+    if SOUNDS_DIR.resolve() not in path.parents or not path.exists():
+        return Response(content=f"no such clip: {name}", status_code=404)
+    return Response(content=path.read_bytes(), media_type="audio/wav")
+
+
 ui.expose_api("GET", "/detections", get_detections)
 ui.expose_api("GET", "/confidence", set_confidence)
 ui.expose_api("GET", "/open", lid_open)
 ui.expose_api("GET", "/play", play)
+ui.expose_api("GET", "/sound", serve_sound)
 
 App.run()

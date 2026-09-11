@@ -17,6 +17,26 @@ body {
 
 .header {
   margin-bottom: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.enable-sound-btn {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid #008184;
+  background: #fff;
+  color: #008184;
+  cursor: pointer;
+}
+
+.enable-sound-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .arduino-text {
